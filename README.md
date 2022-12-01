@@ -10,3 +10,6 @@ You can use the following command to add it as dependency to your project
 ```javascript
 npm i @clover-network/clover-connector
 ```
+
+# Version 2.x
+Support web3-react v8

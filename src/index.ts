@@ -1,263 +1,200 @@
-import { AbstractConnectorArguments, ConnectorUpdate } from "@web3-react/types";
-import { AbstractConnector } from "@web3-react/abstract-connector";
-import warning from "tiny-warning";
+import type {
+  Actions,
+  AddEthereumChainParameter,
+  Provider,
+  ProviderConnectInfo,
+  ProviderRpcError,
+  // WatchAssetParameters,
+} from '@web3-react/types'
+import { Connector } from '@web3-react/types'
 
-import { SendReturnResult, SendReturn, Send, SendOld } from "./types";
+type ClvWalletProvider = Provider & { isClover?: boolean; providers?: ClvWalletProvider[] }
 
-function parseSendReturn(sendReturn: SendReturnResult | SendReturn): any {
-  return sendReturn.hasOwnProperty("result") ? sendReturn.result : sendReturn;
-}
-
-export class NoCloverProviderError extends Error {
+export class NoClvWalletError extends Error {
   public constructor() {
-    super();
-    this.name = this.constructor.name;
-    this.message = "No Clover provider was found on window.clover.";
+    super('Clv wallet not installed')
+    this.name = NoClvWalletError.name
+    Object.setPrototypeOf(this, NoClvWalletError.prototype)
   }
 }
 
-export class UserRejectedRequestError extends Error {
-  public constructor() {
-    super();
-    this.name = this.constructor.name;
-    this.message = "The user rejected the request.";
-  }
+function parseChainId(chainId: string) {
+  return Number.parseInt(chainId, 16)
 }
 
-export class CloverConnector extends AbstractConnector {
-  constructor(kwargs: AbstractConnectorArguments) {
-    super(kwargs);
+/**
+ * @param options - Options to pass to `@metamask/detect-provider`
+ * @param onError - Handler to report errors thrown from eventListeners.
+ */
+export interface ClvWalletConstructorArgs {
+  actions: Actions
+}
 
-    this.handleNetworkChanged = this.handleNetworkChanged.bind(this);
-    this.handleChainChanged = this.handleChainChanged.bind(this);
-    this.handleAccountsChanged = this.handleAccountsChanged.bind(this);
-    this.handleClose = this.handleClose.bind(this);
-    this.getCloverProvider = this.getCloverProvider.bind(this)
+export class ClvWallet extends Connector {
+  /** {@inheritdoc Connector.provider} */
+  public provider?: ClvWalletProvider
+
+  private eagerConnection?: Promise<void>
+
+  constructor({ actions }: ClvWalletConstructorArgs) {
+    super(actions)
   }
 
-  private handleChainChanged(chainId: string | number): void {
-    if (__DEV__) {
-      console.log("Handling 'chainChanged' event with payload", chainId);
-    }
-    this.emitUpdate({ chainId, provider: this.getCloverProvider() });
-  }
-
-  private handleAccountsChanged(accounts: string[]): void {
-    if (__DEV__) {
-      console.log("Handling 'accountsChanged' event with payload", accounts);
-    }
-    if (accounts.length === 0) {
-      this.emitDeactivate();
-    } else {
-      this.emitUpdate({ account: accounts[0] });
-    }
-  }
-
-  private handleClose(code: number, reason: string): void {
-    if (__DEV__) {
-      console.log("Handling 'close' event with payload", code, reason);
-    }
-    this.emitDeactivate();
-  }
-
-  private handleNetworkChanged(networkId: string | number): void {
-    if (__DEV__) {
-      console.log("Handling 'networkChanged' event with payload", networkId);
-    }
-    this.emitUpdate({ chainId: networkId, provider: this.getCloverProvider() });
-  }
-
-  private getCloverProvider() {
-    const provider = window.clover as any
-    if (provider?.providers?.length) {
-      return provider.providers.find((p: any) => p.isClover) ?? provider.providers[0]
-    }
-    return provider
-  }
-
-  public async activate(): Promise<ConnectorUpdate> {
-    if (!window.clover) {
-      throw new NoCloverProviderError();
-    }
-
-    const provider = this.getCloverProvider()
-    if (provider.on) {
-      provider.on("chainChanged", this.handleChainChanged);
-      provider.on("accountsChanged", this.handleAccountsChanged);
-      provider.on("close", this.handleClose);
-      provider.on("networkChanged", this.handleNetworkChanged);
-    }
-
-    if (provider.isClover) {
-      provider.autoRefreshOnNetworkChange = false;
-    }
-
-    // try to activate + get account via eth_requestAccounts
-    let account;
-    try {
-      account = await (provider.send as Send)(
-        "eth_requestAccounts"
-      ).then((sendReturn) => parseSendReturn(sendReturn)[0]);
-    } catch (error) {
-      if ((error as any).code === 4001) {
-        throw new UserRejectedRequestError();
-      }
-      warning(
-        false,
-        "eth_requestAccounts was unsuccessful, falling back to enable"
-      );
-    }
-
-    // if unsuccessful, try enable
-    if (!account) {
-      // if enable is successful but doesn't return accounts, fall back to getAccount (not happy i have to do this...)
-      account = await provider.enable().then(
-        (sendReturn: any) => sendReturn && parseSendReturn(sendReturn)[0]
-      );
-    }
-
-    return { provider: provider, ...(account ? { account } : {}) };
-  }
-
-  public async getProvider(): Promise<any> {
-    return this.getCloverProvider();
-  }
-
-  public async getChainId(): Promise<number | string> {
-    if (!window.clover) {
-      throw new NoCloverProviderError();
-    }
-
-    let chainId;
-    const provider = this.getCloverProvider()
-    try {
-      chainId = await (provider.send as Send)("eth_chainId").then(
-        parseSendReturn
-      );
-    } catch {
-      warning(
-        false,
-        "eth_chainId was unsuccessful, falling back to net_version"
-      );
-    }
-
-    if (!chainId) {
-      try {
-        chainId = await (provider.send as Send)("net_version").then(
-          parseSendReturn
-        );
-      } catch {
-        warning(
-          false,
-          "net_version was unsuccessful, falling back to net version v2"
-        );
-      }
-    }
-
-    if (!chainId) {
-      try {
-        chainId = parseSendReturn(
-          (provider.send as SendOld)({ method: "net_version" })
-        );
-      } catch {
-        warning(
-          false,
-          "net_version v2 was unsuccessful, falling back to manual matches and static properties"
-        );
-      }
-    }
-
-    if (!chainId) {
-      if ((provider as any).isDapper) {
-        chainId = parseSendReturn(
-          (provider as any).cachedResults.net_version
-        );
+  private detectProvide() {
+    return new Promise(resolve => {
+      if (window.clover) {
+        resolve(window.clover)
       } else {
-        chainId =
-          provider.chainId ||
-          provider.netVersion ||
-          provider.networkVersion ||
-          provider._chainId;
+        setTimeout(() => {
+          resolve(window.clover)
+        }, 3000)
       }
-    }
-
-    return chainId;
+    })
   }
+  private async isomorphicInitialize(): Promise<void> {
+    if (this.eagerConnection) return
 
-  public async getAccount(): Promise<null | string> {
-    if (!window.clover) {
-      throw new NoCloverProviderError();
-    }
+    return (this.eagerConnection = this.detectProvide().then(async (m) => {
+      const provider = m
+      if (provider) {
+        this.provider = provider as ClvWalletProvider
 
-    let account;
-    const provider = this.getCloverProvider()
-    try {
-      account = await (provider.send as Send)("eth_accounts").then(
-        (sendReturn) => parseSendReturn(sendReturn)[0]
-      );
-    } catch {
-      warning(false, "eth_accounts was unsuccessful, falling back to enable");
-    }
-
-    if (!account) {
-      try {
-        account = await provider.enable().then(
-          (sendReturn: any) => parseSendReturn(sendReturn)[0]
-        );
-      } catch {
-        warning(
-          false,
-          "enable was unsuccessful, falling back to eth_accounts v2"
-        );
-      }
-    }
-
-    if (!account) {
-      account = parseSendReturn(
-        (provider.send as SendOld)({ method: "eth_accounts" })
-      )[0];
-    }
-
-    return account;
-  }
-
-  public deactivate() {
-    const provider = this.getCloverProvider()
-    if (provider?.removeListener) {
-      provider.removeListener(
-        "chainChanged",
-        this.handleChainChanged
-      );
-      provider.removeListener(
-        "accountsChanged",
-        this.handleAccountsChanged
-      );
-      provider.removeListener("close", this.handleClose);
-      provider.removeListener(
-        "networkChanged",
-        this.handleNetworkChanged
-      );
-    }
-  }
-
-  public async isAuthorized(): Promise<boolean> {
-    if (!window.clover) {
-      return false;
-    }
-
-    const provider = this.getCloverProvider()
-    try {
-      return await (provider.send as Send)("eth_accounts").then(
-        (sendReturn) => {
-          if (parseSendReturn(sendReturn).length > 0) {
-            return true;
-          } else {
-            return false;
-          }
+        // handle the case when e.g. metamask and coinbase wallet are both installed
+        if (this.provider.providers?.length) {
+          this.provider = this.provider.providers.find((p: any) => p.isClover) ?? this.provider.providers[0]
         }
-      );
-    } catch {
-      return false;
-    }
+
+        this.provider.on('connect', ({ chainId }: ProviderConnectInfo): void => {
+          this.actions.update({ chainId: parseChainId(chainId) })
+        })
+
+        this.provider.on('disconnect', (error: ProviderRpcError): void => {
+          this.actions.resetState()
+          this.onError?.(error)
+        })
+
+        this.provider.on('chainChanged', (chainId: string): void => {
+          this.actions.update({ chainId: parseChainId(chainId) })
+        })
+
+        this.provider.on('accountsChanged', (accounts: string[]): void => {
+          if (accounts.length === 0) {
+            // handle this edge case by disconnecting
+            this.actions.resetState()
+          } else {
+            this.actions.update({ accounts })
+          }
+        })
+      }
+    }))
   }
+
+  /** {@inheritdoc Connector.connectEagerly} */
+  public async connectEagerly(): Promise<void> {
+    const cancelActivation = this.actions.startActivation()
+
+    await this.isomorphicInitialize()
+    if (!this.provider) return cancelActivation()
+
+    return Promise.all([
+      this.provider.request({ method: 'eth_chainId' }) as Promise<string>,
+      this.provider.request({ method: 'eth_accounts' }) as Promise<string[]>,
+    ])
+      .then(([chainId, accounts]) => {
+        if (accounts.length) {
+          this.actions.update({ chainId: parseChainId(chainId), accounts })
+        } else {
+          throw new Error('No accounts returned')
+        }
+      })
+      .catch((error) => {
+        console.debug('Could not connect eagerly', error)
+        // we should be able to use `cancelActivation` here, but on mobile, metamask emits a 'connect'
+        // event, meaning that chainId is updated, and cancelActivation doesn't work because an intermediary
+        // update has occurred, so we reset state instead
+        this.actions.resetState()
+      })
+  }
+
+  /**
+   * Initiates a connection.
+   *
+   * @param desiredChainIdOrChainParameters - If defined, indicates the desired chain to connect to. If the user is
+   * already connected to this chain, no additional steps will be taken. Otherwise, the user will be prompted to switch
+   * to the chain, if one of two conditions is met: either they already have it added in their extension, or the
+   * argument is of type AddEthereumChainParameter, in which case the user will be prompted to add the chain with the
+   * specified parameters first, before being prompted to switch.
+   */
+  public async activate(desiredChainIdOrChainParameters?: number | AddEthereumChainParameter): Promise<void> {
+    // let cancelActivation: () => void
+    // if (!this.provider?.isConnected?.()) cancelActivation = this.actions.startActivation()
+
+    return this.isomorphicInitialize()
+      .then(async () => {
+        if (!this.provider) throw new NoClvWalletError()
+
+        return Promise.all([
+          this.provider.request({ method: 'eth_chainId' }) as Promise<string>,
+          this.provider.request({ method: 'eth_requestAccounts' }) as Promise<string[]>,
+        ]).then(([chainId, accounts]) => {
+          const receivedChainId = parseChainId(chainId)
+          const desiredChainId =
+            typeof desiredChainIdOrChainParameters === 'number'
+              ? desiredChainIdOrChainParameters
+              : desiredChainIdOrChainParameters?.chainId
+
+          // if there's no desired chain, or it's equal to the received, update
+          if (!desiredChainId || receivedChainId === desiredChainId)
+            return this.actions.update({ chainId: receivedChainId, accounts })
+
+          const desiredChainIdHex = `0x${desiredChainId.toString(16)}`
+
+          // if we're here, we can try to switch networks
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+          return this.provider!.request({
+            method: 'wallet_switchEthereumChain',
+            params: [{ chainId: desiredChainIdHex }],
+          })
+            .catch((error: ProviderRpcError) => {
+              if (error.code === 4902 && typeof desiredChainIdOrChainParameters !== 'number') {
+                // if we're here, we can try to add a new network
+                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                return this.provider!.request({
+                  method: 'wallet_addEthereumChain',
+                  params: [{ ...desiredChainIdOrChainParameters, chainId: desiredChainIdHex }],
+                })
+              }
+
+              throw error
+            })
+            .then(() => this.activate(desiredChainId))
+        })
+      })
+      .catch((error) => {
+        // cancelActivation?.()
+        throw error
+      })
+  }
+
+  // public async watchAsset({ address, symbol, decimals, image }: WatchAssetParameters): Promise<true> {
+  //   if (!this.provider) throw new Error('No provider')
+
+  //   return this.provider
+  //     .request({
+  //       method: 'wallet_watchAsset',
+  //       params: {
+  //         type: 'ERC20', // Initially only supports ERC20, but eventually more!
+  //         options: {
+  //           address, // The address that the token is at.
+  //           symbol, // A ticker symbol or shorthand, up to 5 chars.
+  //           decimals, // The number of decimals in the token
+  //           image, // A string url of the token logo
+  //         },
+  //       },
+  //     })
+  //     .then((success) => {
+  //       if (!success) throw new Error('Rejected')
+  //       return true
+  //     })
+  // }
 }

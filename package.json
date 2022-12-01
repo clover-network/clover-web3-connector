@@ -3,7 +3,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "1.1.0",
+  "version": "2.0.0",
   "description": "clover web connector",
   "keywords": [
     "react",
@@ -22,21 +22,20 @@
     "type": "git",
     "url": "https://github.com/clover-network/clover-web3-connector.git"
   },
-  "main": "dist/index.js",
-  "module": "dist/clover-connector.esm.js",
-  "typings": "dist/index.d.ts",
+  "type": "commonjs",
+  "types": "./dist/index.d.ts",
+  "main": "./dist/index.js",
+  "exports": "./dist/index.js",
   "files": [
-    "dist"
+    "dist/*"
   ],
   "scripts": {
-    "start": "tsdx watch",
-    "build": "tsdx build",
-    "lint": "tsdx lint src",
-    "semantic-release": "semantic-release"
+    "prebuild": "rm -rf dist",
+    "start": "tsc --watc",
+    "build": "tsc build"
   },
   "dependencies": {
-    "@web3-react/abstract-connector": "^6.0.7",
-    "@web3-react/types": "^6.0.7",
+    "@web3-react/types": "^8.0.20-beta.0",
     "tiny-warning": "^1.0.3"
   },
   "license": "GPL-3.0-or-later",
